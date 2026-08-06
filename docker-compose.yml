@@ -32,9 +32,33 @@ services:
     depends_on: [minio]
     entrypoint: ["/bin/sh", "-c", "until mc alias set local http://minio:9000 fiapx fiapx-minio-password; do sleep 1; done; mc mb --ignore-existing local/videos; mc anonymous set download local/videos"]
     networks: [fiapx]
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["6379:6379"]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 20 }
+    networks: [fiapx]
   mailpit:
     image: axllent/mailpit:v1.24
     ports: ["1025:1025", "8025:8025"]
+    networks: [fiapx]
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
+    ports: ["9090:9090"]
+    volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    networks: [fiapx]
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_SECURITY_ADMIN_USER: fiapx
+      GF_SECURITY_ADMIN_PASSWORD: fiapx
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["3000:3000"]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
     networks: [fiapx]
   auth-service:
     build: ../fiapx-auth-service
@@ -56,9 +80,11 @@ services:
       S3_ACCESS_KEY: fiapx
       S3_SECRET_KEY: fiapx-minio-password
       S3_BUCKET: videos
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
       minio: { condition: service_started }
     restart: always
     networks: [fiapx]

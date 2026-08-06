@@ -1,0 +1,30 @@
+# Reproduz o roteamento que o Nginx faz no Compose: /auth para o auth-service e
+# /videos para o serviço Python, com upgrade de WebSocket preservado.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fiapx
+  namespace: fiapx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 500m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /api/v1/$1/$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /(auth)/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: auth-service
+                port: { number: 8081 }
+          - path: /(videos)/(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: video-management-service
+                port: { number: 8000 }

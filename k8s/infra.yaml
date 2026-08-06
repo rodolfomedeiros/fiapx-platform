@@ -1,0 +1,268 @@
+# Dependências de infraestrutura em réplica única, suficientes para demonstrar o
+# sistema. Em produção, prefira serviços gerenciados ou operadores dedicados.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: fiapx
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: fiapx
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports: [{ containerPort: 5432, name: postgres }]
+          env:
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: fiapx-config, key: DATABASE_NAME } }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: POSTGRES_PASSWORD } }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "fiapx", "-d", "fiapx"] }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: fiapx
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          ports: [{ containerPort: 6379, name: redis }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 320Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: fiapx
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379, targetPort: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: fiapx
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: rabbitmq }
+  template:
+    metadata:
+      labels: { app: rabbitmq }
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4-management-alpine
+          ports:
+            - { containerPort: 5672, name: amqp }
+            - { containerPort: 15672, name: management }
+            - { containerPort: 15692, name: metrics }
+          volumeMounts:
+            - { name: config, mountPath: /etc/rabbitmq/rabbitmq.conf, subPath: rabbitmq.conf }
+            - { name: config, mountPath: /etc/rabbitmq/definitions.json, subPath: definitions.json }
+          readinessProbe:
+            exec: { command: ["rabbitmq-diagnostics", "-q", "check_running"] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: config
+          configMap: { name: rabbitmq-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: fiapx
+  labels: { app: rabbitmq }
+spec:
+  selector: { app: rabbitmq }
+  ports:
+    - { name: amqp, port: 5672, targetPort: 5672 }
+    - { name: management, port: 15672, targetPort: 15672 }
+    - { name: metrics, port: 15692, targetPort: 15692 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: fiapx
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: fiapx
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: minio }
+  template:
+    metadata:
+      labels: { app: minio }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports:
+            - { containerPort: 9000, name: s3 }
+            - { containerPort: 9001, name: console }
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: S3_ACCESS_KEY } }
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: S3_SECRET_KEY } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: minio-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: fiapx
+spec:
+  selector: { app: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000 }
+    - { name: console, port: 9001, targetPort: 9001 }
+---
+# Cria o bucket depois que o MinIO sobe. Roda uma vez por deploy.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: fiapx
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until mc alias set local http://minio:9000 "$S3_ACCESS_KEY" "$S3_SECRET_KEY"; do sleep 2; done
+              mc mb --ignore-existing local/videos
+          env:
+            - name: S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: S3_ACCESS_KEY } }
+            - name: S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: fiapx-secrets, key: S3_SECRET_KEY } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: fiapx
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mailpit }
+  template:
+    metadata:
+      labels: { app: mailpit }
+    spec:
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:v1.24
+          ports:
+            - { containerPort: 1025, name: smtp }
+            - { containerPort: 8025, name: ui }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: fiapx
+spec:
+  selector: { app: mailpit }
+  ports:
+    - { name: smtp, port: 1025, targetPort: 1025 }
+    - { name: ui, port: 8025, targetPort: 8025 }

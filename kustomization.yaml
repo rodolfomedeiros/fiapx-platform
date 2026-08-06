@@ -1,0 +1,35 @@
+# A raiz fica no repositório, e não em k8s/, porque o kustomize só lê arquivos abaixo
+# da própria raiz — e o schema do banco e a topologia do broker moram fora de k8s/,
+# compartilhados com o Compose, para que as duas formas de subir o sistema não divirjam.
+#
+#   kubectl apply -k .
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fiapx
+
+resources:
+  - k8s/namespace.yaml
+  - k8s/config.yaml
+  - k8s/infra.yaml
+  - k8s/services.yaml
+  - k8s/autoscaling.yaml
+  - k8s/ingress.yaml
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - postgres/init.sql
+  - name: rabbitmq-config
+    files:
+      - rabbitmq/rabbitmq.conf
+      - rabbitmq/definitions.json
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fiapx
+    # Fora dos selectors: matchLabels de Deployment é imutável, e incluir a marca
+    # ali quebraria qualquer apply sobre um Deployment já existente.
+    includeSelectors: false

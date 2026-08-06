@@ -1,0 +1,86 @@
+# Requer o metrics-server no cluster (`kubectl top pods` precisa responder).
+#
+# O sinal certo para escalar o worker seria a profundidade de video-processing-queue,
+# porque é ela que cresce no pico. Isso exige o Prometheus Adapter publicando a métrica
+# como external metric; enquanto ele não está no cluster, CPU é a aproximação — a
+# extração de quadros é justamente trabalho de CPU. O bloco comentado abaixo é a
+# versão por fila, para trocar quando o adapter existir.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: video-processor-worker
+  namespace: fiapx
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: video-processor-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # - type: External
+    #   external:
+    #     metric:
+    #       name: rabbitmq_queue_messages_ready
+    #       selector:
+    #         matchLabels: { queue: video-processing-queue }
+    #     target:
+    #       type: AverageValue
+    #       averageValue: "5"
+  behavior:
+    scaleUp:
+      # Pico de uploads deve virar réplica rápido; é este o requisito de não perder requisição.
+      stabilizationWindowSeconds: 30
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }
+    scaleDown:
+      # Descer devagar evita matar worker no meio de um vídeo.
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 60 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: video-management-service
+  namespace: fiapx
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: video-management-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: video-management-service
+  namespace: fiapx
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: video-management-service }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service
+  namespace: fiapx
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: auth-service }

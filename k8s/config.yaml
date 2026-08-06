@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fiapx-config
+  namespace: fiapx
+data:
+  DATABASE_HOST: postgres
+  DATABASE_NAME: fiapx
+  RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/%2F
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: videos
+  AUTH_INTROSPECTION_URL: http://auth-service:8081/api/v1/auth/introspect
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  SMTP_FROM: no-reply@fiapx.local
+---
+# Valores de desenvolvimento. Em qualquer ambiente compartilhado, substitua por um
+# Secret gerado fora do repositório (kubectl create secret / External Secrets / SOPS).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fiapx-secrets
+  namespace: fiapx
+type: Opaque
+stringData:
+  POSTGRES_USER: fiapx
+  POSTGRES_PASSWORD: fiapx
+  JWT_SECRET: local-development-secret-must-have-at-least-32-bytes
+  S3_ACCESS_KEY: fiapx
+  S3_SECRET_KEY: fiapx-minio-password
