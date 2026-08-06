@@ -1,0 +1,81 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports: ["8080:80"]
+    volumes: ["./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro"]
+    depends_on: [auth-service, video-management-service]
+    networks: [fiapx]
+  postgres:
+    image: postgres:17-alpine
+    environment: { POSTGRES_DB: fiapx, POSTGRES_USER: fiapx, POSTGRES_PASSWORD: fiapx }
+    ports: ["5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data, "./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U fiapx -d fiapx"], interval: 5s, timeout: 3s, retries: 20 }
+    networks: [fiapx]
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment: { RABBITMQ_DEFAULT_USER: fiapx, RABBITMQ_DEFAULT_PASS: fiapx }
+    ports: ["5672:5672", "15672:15672"]
+    volumes: ["./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro"]
+    networks: [fiapx]
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment: { MINIO_ROOT_USER: fiapx, MINIO_ROOT_PASSWORD: fiapx-minio-password }
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+    networks: [fiapx]
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: [minio]
+    entrypoint: ["/bin/sh", "-c", "until mc alias set local http://minio:9000 fiapx fiapx-minio-password; do sleep 1; done; mc mb --ignore-existing local/videos; mc anonymous set download local/videos"]
+    networks: [fiapx]
+  mailpit:
+    image: axllent/mailpit:v1.24
+    ports: ["1025:1025", "8025:8025"]
+    networks: [fiapx]
+  auth-service:
+    build: ../fiapx-auth-service
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/fiapx
+      DATABASE_USERNAME: fiapx
+      DATABASE_PASSWORD: fiapx
+      JWT_SECRET: local-development-secret-must-have-at-least-32-bytes
+    depends_on: { postgres: { condition: service_healthy } }
+    networks: [fiapx]
+  video-management-service:
+    build: ../fiapx-video-management-service
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fiapx:fiapx@postgres:5432/fiapx
+      AUTH_INTROSPECTION_URL: http://auth-service:8081/api/v1/auth/introspect
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/%2F
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      S3_ACCESS_KEY: fiapx
+      S3_SECRET_KEY: fiapx-minio-password
+      S3_BUCKET: videos
+    depends_on: [postgres, rabbitmq, minio]
+    restart: always
+    networks: [fiapx]
+  video-processor-worker:
+    build: ../fiapx-video-processor-worker
+    environment:
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/%2F
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: fiapx
+      S3_SECRET_KEY: fiapx-minio-password
+      S3_BUCKET: videos
+    depends_on: [rabbitmq, minio]
+    restart: always
+    networks: [fiapx]
+  notification-service:
+    build: ../fiapx-notification-service
+    environment:
+      RABBITMQ_URL: amqp://fiapx:fiapx@rabbitmq:5672/%2F
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_FROM: no-reply@fiapx.local
+    depends_on: [rabbitmq, mailpit]
+    networks: [fiapx]
+networks: { fiapx: {} }
+volumes: { postgres-data: {}, minio-data: {} }
