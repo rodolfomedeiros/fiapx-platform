@@ -152,6 +152,25 @@ docker compose up -d --scale video-processor-worker=4
 
 O Prometheus descobre as réplicas por DNS, então todas aparecem sem editar configuração.
 
+## Teste de ponta a ponta
+
+[postman/](postman/) traz uma collection que exercita o sistema inteiro — os quatro
+microsserviços mais RabbitMQ, MinIO, Mailpit, Prometheus e Grafana — em **20 requests
+com 40 assertions**, incluindo o caminho feliz (upload → quadros → `.zip` → download) e
+o de falha (vídeo inválido → 3 tentativas → DLQ → e-mail).
+
+Importe os dois arquivos no Postman, ou rode pela linha de comando:
+
+```sh
+docker compose up -d
+cd postman
+npx newman run FIAP-X.postman_collection.json \
+  -e FIAP-X.postman_environment.json --delay-request 3000
+```
+
+Detalhes de uso, incluindo como testar o WebSocket, em
+[postman/README.md](postman/README.md).
+
 ## Subindo no Kubernetes
 
 ```sh

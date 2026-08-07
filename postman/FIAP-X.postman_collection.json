@@ -1,0 +1,563 @@
+{
+  "info": {
+    "_postman_id": "b6f2a6b0-6e6a-4f0a-9d3a-fiapx-e2e-0001",
+    "name": "FIAP X — E2E completo",
+    "description": "Fluxo de ponta a ponta pelos quatro microsserviços (auth-service, video-management-service, video-processor-worker, notification-service) mais a infraestrutura (RabbitMQ, Mailpit, Prometheus, Grafana).\n\n**Ordem de execução:** as pastas são numeradas e devem rodar em sequência — cada uma depende de variáveis salvas pela anterior (token, video_id, fail_video_id...).\n\n**Antes de rodar:** suba o ambiente com `docker compose up -d` em `fiapx-platform/` e importe também o Environment `FIAP-X.postman_environment.json`.\n\n**WebSocket (tempo real):** não está nesta collection porque o formato de item WebSocket varia entre versões do Postman e arriscava quebrar a importação. Para testar manualmente: no Postman, `New > WebSocket Request`, conecte em `ws://localhost:8080/videos/ws?token={{token}}` (rode a pasta 1 - Auth antes, para ter o token) e faça o upload da pasta 2 em outra aba — as mensagens `PROCESSING`/`COMPLETED` chegam ao vivo na conexão aberta.\n\n**Upload de arquivo:** os itens de upload apontam para os fixtures em `postman/fixtures/`. Se o Postman não anexar o arquivo automaticamente ao importar, abra a request, vá em Body > form-data > campo `file` e selecione o arquivo manualmente (indicado na descrição de cada request).\n\n**Collection Runner:** se for rodar tudo de uma vez pelo Runner, configure um delay de ~3000ms entre requests — o worker leva alguns segundos para processar cada vídeo, e o caminho de falha espera até 7s de backoff (1s+2s+4s) entre as 3 tentativas.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "rabbitmq_url", "value": "http://localhost:15672" },
+    { "key": "mailpit_url", "value": "http://localhost:8025" },
+    { "key": "prometheus_url", "value": "http://localhost:9090" },
+    { "key": "grafana_url", "value": "http://localhost:3000" },
+    { "key": "rabbitmq_user", "value": "fiapx" },
+    { "key": "rabbitmq_pass", "value": "fiapx" },
+    { "key": "grafana_user", "value": "fiapx" },
+    { "key": "grafana_pass", "value": "fiapx" },
+    { "key": "test_password", "value": "senha-postman-2026" },
+    { "key": "test_email", "value": "" },
+    { "key": "token", "value": "" },
+    { "key": "user_id", "value": "" },
+    { "key": "video_id", "value": "" },
+    { "key": "fail_video_id", "value": "" },
+    { "key": "download_url", "value": "" },
+    { "key": "mailpit_message_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1 - Auth (auth-service, Java)",
+      "item": [
+        {
+          "name": "1.1 Registrar usuário",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// gera um e-mail único por execução, para poder rodar a collection várias vezes sem 409",
+                  "pm.collectionVariables.set('test_email', 'postman-' + Date.now() + '@e2e.local');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('cadastro criado (201)', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('resposta traz id, name e email', () => {",
+                  "  pm.expect(body.id).to.be.a('string');",
+                  "  pm.expect(body.email).to.eql(pm.collectionVariables.get('test_email').toLowerCase());",
+                  "});",
+                  "pm.test('senha não vaza na resposta', () => {",
+                  "  pm.expect(JSON.stringify(body)).to.not.include(pm.collectionVariables.get('test_password'));",
+                  "});",
+                  "pm.collectionVariables.set('user_id', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Postman E2E\",\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/auth/register", "host": ["{{base_url}}"], "path": ["auth", "register"] },
+            "description": "POST /api/v1/auth/register no auth-service, roteado pelo Nginx. Senha precisa ter entre 8 e 128 caracteres; e-mail duplicado responde 409."
+          }
+        },
+        {
+          "name": "1.2 Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('login OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('devolve um Bearer token', () => {",
+                  "  pm.expect(body.token_type).to.eql('Bearer');",
+                  "  pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{test_email}}\",\n  \"password\": \"{{test_password}}\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/auth/login", "host": ["{{base_url}}"], "path": ["auth", "login"] },
+            "description": "POST /api/v1/auth/login. O token salvo em {{token}} é reaproveitado por todas as requests seguintes que exigem Authorization."
+          }
+        },
+        {
+          "name": "1.3 Introspecção do token (utilitário)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('introspecção responde 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('token ativo e com o sub esperado', () => {",
+                  "  pm.expect(body.active).to.be.true;",
+                  "  pm.expect(body.sub).to.eql(pm.collectionVariables.get('user_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/auth/introspect", "host": ["{{base_url}}"], "path": ["auth", "introspect"] },
+            "description": "Endpoint interno que o video-management-service usa para validar o token. Útil aqui só para conferir que o token está ativo antes de seguir."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 - Vídeos, caminho feliz (video-management-service, Python + video-processor-worker, Rust)",
+      "item": [
+        {
+          "name": "2.1 Upload de vídeo válido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('upload aceito (202)', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('status inicial é RECEIVED', () => pm.expect(body.status).to.eql('RECEIVED'));",
+                  "pm.collectionVariables.set('video_id', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/test-video-valido.mp4"
+                }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/videos/upload", "host": ["{{base_url}}"], "path": ["videos", "upload"] },
+            "description": "Se o arquivo não vier anexado automaticamente: Body > form-data > campo 'file' > selecione postman/fixtures/test-video-valido.mp4 (vídeo de 5s a 2fps, gera 5 frames). Não defina Content-Type manualmente — o Postman gera o boundary do multipart sozinho."
+          }
+        },
+        {
+          "name": "2.2 Aguardar o processamento (~10s)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// setTimeout não bloqueia o pre-request script do Postman — a request dispararia",
+                  "// na mesma hora. Um laço síncrono é o jeito que realmente segura o envio.",
+                  "const ate = Date.now() + 10000;",
+                  "while (Date.now() < ate) { /* espera ocupada, de propósito */ }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/videos?status=COMPLETED", "host": ["{{base_url}}"], "path": ["videos"], "query": [{ "key": "status", "value": "COMPLETED" }] },
+            "description": "Request só de espera: o pre-request script segura ~10s (o tempo do worker consumir a fila, rodar o FFmpeg e publicar COMPLETED) antes de checar a listagem filtrada. Se aparecer vazio, rode este item de novo — o Postman não recarrega sozinho."
+          }
+        },
+        {
+          "name": "2.3 Listar todos os vídeos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('listagem OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('o vídeo enviado aparece na listagem', () => {",
+                  "  const ids = body.items.map(i => i.id);",
+                  "  pm.expect(ids).to.include(pm.collectionVariables.get('video_id'));",
+                  "});",
+                  "pm.test('total bate com a quantidade de items retornados na página', () => {",
+                  "  pm.expect(body.total).to.be.at.least(body.items.length);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/videos", "host": ["{{base_url}}"], "path": ["videos"] },
+            "description": "GET /api/v1/videos, paginado. Só traz vídeos do usuário autenticado pelo token."
+          }
+        },
+        {
+          "name": "2.4 Listar filtrando por status=COMPLETED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('filtro OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('todo item devolvido está COMPLETED', () => {",
+                  "  body.items.forEach(i => pm.expect(i.status).to.eql('COMPLETED'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/videos?status=COMPLETED", "host": ["{{base_url}}"], "path": ["videos"], "query": [{ "key": "status", "value": "COMPLETED" }] },
+            "description": "Se vier vazio, o vídeo ainda não terminou de processar — volte ao item 2.2 e espere mais um pouco."
+          }
+        },
+        {
+          "name": "2.5 Gerar link de download",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('link gerado (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('url assinada do MinIO presente', () => pm.expect(body.url).to.include('/videos/processed/'));",
+                  "pm.collectionVariables.set('download_url', body.url);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{base_url}}/videos/{{video_id}}/download",
+              "host": ["{{base_url}}"],
+              "path": ["videos", "{{video_id}}", "download"]
+            },
+            "description": "Responde 409 se o vídeo ainda não estiver COMPLETED, e 404 se o id não existir ou pertencer a outro usuário."
+          }
+        },
+        {
+          "name": "2.6 Baixar o .zip (URL assinada do MinIO)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('download do zip OK (200)', () => pm.response.to.have.status(200));",
+                  "pm.test('corpo não está vazio', () => pm.expect(pm.response.responseSize).to.be.above(0));",
+                  "pm.test('é mesmo um zip (assinatura PK)', () => {",
+                  "  const bytes = pm.response.stream;",
+                  "  pm.expect(bytes[0]).to.eql(0x50); // 'P'",
+                  "  pm.expect(bytes[1]).to.eql(0x4b); // 'K'",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{download_url}}", "host": ["{{download_url}}"] },
+            "description": "A URL já vem assinada (query string com Signature/Expires) — não precisa de Authorization aqui. Deve conter 5 arquivos frame_000N.png."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Caminho de falha (worker, DLQ e notification-service)",
+      "item": [
+        {
+          "name": "3.1 Upload de vídeo inválido",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('upload aceito (202) — a validação de conteúdo é assíncrona', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('fail_video_id', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/test-video-quebrado.mp4"
+                }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/videos/upload", "host": ["{{base_url}}"], "path": ["videos", "upload"] },
+            "description": "test-video-quebrado.mp4 é um .mp4 truncado (moov atom ausente) — o FFmpeg rejeita, forçando o caminho de retentativa/falha. Se necessário, anexe manualmente pelo Body > form-data."
+          }
+        },
+        {
+          "name": "3.2 Aguardar as 3 tentativas (~10s)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// backoff exponencial entre tentativas: 1s + 2s + 4s = 7s, mais margem.",
+                  "// setTimeout não bloqueia o pre-request script; um laço síncrono, sim.",
+                  "const ate = Date.now() + 10000;",
+                  "while (Date.now() < ate) { /* espera ocupada, de propósito */ }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/videos?status=ERROR", "host": ["{{base_url}}"], "path": ["videos"], "query": [{ "key": "status", "value": "ERROR" }] },
+            "description": "Segura ~10s antes de checar. O worker republica em video.received a cada falha (attempt+1), com espera de 1s, 2s e 4s — na 3ª tentativa desiste e marca ERROR."
+          }
+        },
+        {
+          "name": "3.3 Confirmar status ERROR e motivo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('listagem OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "const failed = body.items.find(i => i.id === pm.collectionVariables.get('fail_video_id'));",
+                  "pm.test('vídeo quebrado aparece como ERROR', () => {",
+                  "  pm.expect(failed, 'ainda não chegou em ERROR — rode o item 3.2 de novo e espere mais').to.exist;",
+                  "  pm.expect(failed.status).to.eql('ERROR');",
+                  "});",
+                  "pm.test('error_message explica a falha do ffmpeg', () => {",
+                  "  pm.expect(failed.error_message).to.include('ffmpeg falhou');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{base_url}}/videos?status=ERROR", "host": ["{{base_url}}"], "path": ["videos"], "query": [{ "key": "status", "value": "ERROR" }] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - Infraestrutura e observabilidade",
+      "item": [
+        {
+          "name": "4.1 RabbitMQ — fila de processamento",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('management API OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('a fila video-processing-queue existe e está vazia agora', () => {",
+                  "  pm.expect(body.name).to.eql('video-processing-queue');",
+                  "  pm.expect(body.messages).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "basic", "basic": [{ "key": "username", "value": "{{rabbitmq_user}}" }, { "key": "password", "value": "{{rabbitmq_pass}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{rabbitmq_url}}/api/queues/%2F/video-processing-queue", "host": ["{{rabbitmq_url}}"], "path": ["api", "queues", "%2F", "video-processing-queue"] },
+            "description": "Confirma que a fila drenou depois dos dois uploads (feliz + falho): ambos foram consumidos."
+          }
+        },
+        {
+          "name": "4.2 RabbitMQ — dead letter queue",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('DLQ consultada (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('exatamente 1 mensagem publicada e 1 confirmada (ack) pelo notification-service', () => {",
+                  "  pm.expect(body.message_stats.publish).to.eql(1);",
+                  "  pm.expect(body.message_stats.ack).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "basic", "basic": [{ "key": "username", "value": "{{rabbitmq_user}}" }, { "key": "password", "value": "{{rabbitmq_pass}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{rabbitmq_url}}/api/queues/%2F/video-processing-dlq", "host": ["{{rabbitmq_url}}"], "path": ["api", "queues", "%2F", "video-processing-dlq"] },
+            "description": "video.failed do vídeo quebrado chegou aqui e foi consumido pelo notification-service."
+          }
+        },
+        {
+          "name": "4.3 Mailpit — listar mensagens recebidas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('inbox consultada (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('há pelo menos 1 e-mail de falha', () => pm.expect(body.messages_count).to.be.at.least(1));",
+                  "const msg = body.messages.find(m => m.To.some(t => t.Address === pm.collectionVariables.get('test_email')));",
+                  "pm.test('o e-mail foi endereçado ao usuário do teste', () => pm.expect(msg, 'nenhum e-mail para ' + pm.collectionVariables.get('test_email')).to.exist);",
+                  "if (msg) pm.collectionVariables.set('mailpit_message_id', msg.ID);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{mailpit_url}}/api/v1/messages", "host": ["{{mailpit_url}}"], "path": ["api", "v1", "messages"] },
+            "description": "Mailpit não exige autenticação neste ambiente de desenvolvimento."
+          }
+        },
+        {
+          "name": "4.4 Mailpit — ler o e-mail de falha",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('e-mail lido (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('corpo cita o vídeo, 3 tentativas e o motivo', () => {",
+                  "  pm.expect(body.Text).to.include(pm.collectionVariables.get('fail_video_id'));",
+                  "  pm.expect(body.Text).to.include('3 tentativas');",
+                  "  pm.expect(body.Text).to.include('ffmpeg falhou');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{mailpit_url}}/api/v1/message/{{mailpit_message_id}}", "host": ["{{mailpit_url}}"], "path": ["api", "v1", "message", "{{mailpit_message_id}}"] }
+          }
+        },
+        {
+          "name": "4.5 Prometheus — vídeos por desfecho",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('query OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('métrica fiapx_worker_videos_total existe com dados', () => {",
+                  "  pm.expect(body.status).to.eql('success');",
+                  "  pm.expect(body.data.result.length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{prometheus_url}}/api/v1/query?query=fiapx_worker_videos_total",
+              "host": ["{{prometheus_url}}"],
+              "path": ["api", "v1", "query"],
+              "query": [{ "key": "query", "value": "fiapx_worker_videos_total" }]
+            },
+            "description": "Contador por outcome=completed|retried|failed, publicado pelo video-processor-worker (Rust)."
+          }
+        },
+        {
+          "name": "4.6 Prometheus — notificações por desfecho",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('query OK (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('há ao menos uma notificação registrada', () => pm.expect(body.data.result.length).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{prometheus_url}}/api/v1/query?query=fiapx_notification_messages_total",
+              "host": ["{{prometheus_url}}"],
+              "path": ["api", "v1", "query"],
+              "query": [{ "key": "query", "value": "fiapx_notification_messages_total" }]
+            },
+            "description": "Publicado pelo notification-service (Go)."
+          }
+        },
+        {
+          "name": "4.7 Grafana — health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Grafana saudável (200)', () => pm.response.to.have.status(200));",
+                  "pm.test('database ok', () => pm.expect(pm.response.json().database).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{grafana_url}}/api/health", "host": ["{{grafana_url}}"], "path": ["api", "health"] }
+          }
+        },
+        {
+          "name": "4.8 Grafana — dashboard provisionado",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('dashboard encontrado (200)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('tem os 9 painéis esperados', () => pm.expect(body.dashboard.panels.length).to.eql(9));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "basic", "basic": [{ "key": "username", "value": "{{grafana_user}}" }, { "key": "password", "value": "{{grafana_pass}}" }] },
+            "method": "GET",
+            "url": { "raw": "{{grafana_url}}/api/dashboards/uid/fiapx-overview", "host": ["{{grafana_url}}"], "path": ["api", "dashboards", "uid", "fiapx-overview"] },
+            "description": "Abra http://localhost:3000/d/fiapx-overview no navegador para ver os gráficos visualmente."
+          }
+        }
+      ]
+    }
+  ]
+}
