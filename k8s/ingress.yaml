@@ -28,3 +28,23 @@ spec:
               service:
                 name: video-management-service
                 port: { number: 8000 }
+---
+# Ingress separado porque `rewrite-target` vale para o objeto inteiro: reaproveitar o de
+# cima reescreveria também as rotas da interface, que precisam chegar ao Nginx como estão
+# para que o fallback do SPA devolva o index.html.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fiapx-web
+  namespace: fiapx
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port: { number: 80 }

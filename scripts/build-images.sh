@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Constrói as imagens dos quatro serviços com as tags que os manifestos esperam.
+# Constrói as imagens dos quatro serviços e da interface, com as tags que os manifestos esperam.
 #
 #   ./scripts/build-images.sh
 #
@@ -16,6 +16,7 @@ servicos=(
   "video-management-service:fiapx-video-management-service"
   "video-processor-worker:fiapx-video-processor-worker"
   "notification-service:fiapx-notification-service"
+  "web:fiapx-web"
 )
 
 for servico in "${servicos[@]}"; do

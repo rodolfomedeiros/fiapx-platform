@@ -1,6 +1,6 @@
 # Arquitetura FIAP X
 
-O Nginx expõe `/auth` e `/videos`. O auth-service emite JWTs e o serviço de vídeos os valida por `POST /api/v1/auth/introspect`, guardando as claims no Redis para não repetir a chamada a cada requisição.
+O Nginx expõe `/auth` e `/videos`, e serve em `/` a interface React do fiapx-web — como tudo sai da mesma origem, não há CORS e o WebSocket não precisa de tratamento especial. O auth-service emite JWTs e o serviço de vídeos os valida por `POST /api/v1/auth/introspect`, guardando as claims no Redis para não repetir a chamada a cada requisição.
 
 Após o upload, o serviço Python armazena o original no MinIO e publica `video.received`. O worker Rust consome esse evento, publica `PROCESSING`, extrai um frame por segundo com FFmpeg, armazena o ZIP e publica `COMPLETED`. O serviço de vídeos consome `video.status.changed`, persiste o resultado e reparte a atualização pelo canal `video.updates` do Redis, de onde todas as réplicas a entregam aos seus WebSockets.
 
@@ -11,6 +11,7 @@ Após três falhas, o worker publica `video.failed`; o notification-service cons
 - `POST /auth/register`, `POST /auth/login`
 - `POST /videos/upload`, `GET /videos`, `GET /videos/{id}/download`
 - WebSocket: `/videos/ws?token=<jwt>`
+- `/` e o que não casar com as rotas acima: a interface, com fallback para o `index.html`
 
 ## Barramento
 

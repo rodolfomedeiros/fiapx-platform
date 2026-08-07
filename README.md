@@ -5,7 +5,7 @@ Kubernetes, contrato de eventos e topologia do barramento compartilhados por tod
 microsserviços.
 
 > **Comece por aqui.** Este é o único repositório que sobe o sistema inteiro. Os outros
-> quatro contêm um microsserviço cada e dependem do que está declarado aqui.
+> cinco contêm um serviço cada e dependem do que está declarado aqui.
 
 ## Repositórios do projeto
 
@@ -16,8 +16,9 @@ microsserviços.
 | [fiapx-video-management-service](https://github.com/rodolfomedeiros/fiapx-video-management-service) | Python 3.13 · FastAPI | Upload, listagem, download e WebSocket de tempo real |
 | [fiapx-video-processor-worker](https://github.com/rodolfomedeiros/fiapx-video-processor-worker) | Rust 1.94 · Tokio | Extração de quadros com FFmpeg e compactação em `.zip` |
 | [fiapx-notification-service](https://github.com/rodolfomedeiros/fiapx-notification-service) | Go 1.25 | Consumo da DLQ e envio de e-mail de falha |
+| [fiapx-web](https://github.com/rodolfomedeiros/fiapx-web) | React 19 · TypeScript 6 | Interface de upload, acompanhamento e download |
 
-Para rodar localmente, os cinco repositórios precisam estar clonados **lado a lado**, porque
+Para rodar localmente, os seis repositórios precisam estar clonados **lado a lado**, porque
 o `docker-compose.yml` referencia os serviços por caminho relativo (`../fiapx-auth-service`):
 
 ```
@@ -26,7 +27,8 @@ fiapx-imax/
 ├── fiapx-auth-service/
 ├── fiapx-video-management-service/
 ├── fiapx-video-processor-worker/
-└── fiapx-notification-service/
+├── fiapx-notification-service/
+└── fiapx-web/
 ```
 
 ## Arquitetura
@@ -35,6 +37,7 @@ fiapx-imax/
 flowchart TB
     Client(["Cliente<br/>navegador · Postman"])
     GW["API Gateway<br/>Nginx · Ingress"]
+    Web["fiapx-web<br/>React 19 · estáticos"]
 
     subgraph servicos["Microsserviços"]
         Auth["auth-service<br/>Java 25 · Spring Boot 4"]
@@ -50,6 +53,7 @@ flowchart TB
     SMTP[/"SMTP<br/>Mailpit"/]
 
     Client -->|HTTP + WebSocket| GW
+    GW -->|"/"| Web
     GW --> Auth
     GW --> VMS
     VMS -->|introspecção do token| Auth
@@ -123,7 +127,7 @@ docker compose up --build
 
 | Serviço | Endereço | Credenciais |
 | :--- | :--- | :--- |
-| API (Nginx) | http://localhost:8080 | — |
+| Interface | http://localhost:8080 | crie uma conta na própria tela |
 | Swagger | http://localhost:8080/docs | — |
 | RabbitMQ | http://localhost:15672 | `fiapx` / `fiapx` |
 | MinIO | http://localhost:9001 | `fiapx` / `fiapx-minio-password` |
@@ -143,6 +147,10 @@ fonte de dados apontada para o Prometheus.
 | `GET /videos`, `GET /videos/{id}/download` | video-management-service |
 | `GET /videos/ws?token=<jwt>` | WebSocket de tempo real |
 | `GET /docs`, `GET /openapi.json` | Swagger do serviço de vídeos |
+| todo o resto | fiapx-web, com fallback para o `index.html` |
+
+A interface é a última regra de propósito: `location /` é o prefixo mais curto e sem regex
+do Nginx, então só recebe o que nenhuma das rotas acima casou.
 
 ### Vendo o paralelismo
 
@@ -188,9 +196,13 @@ Compose para que as duas formas de subir o sistema não divirjam.
 | [k8s/namespace.yaml](k8s/namespace.yaml) | Namespace `fiapx` |
 | [k8s/config.yaml](k8s/config.yaml) | ConfigMap e Secret |
 | [k8s/infra.yaml](k8s/infra.yaml) | Postgres, Redis, RabbitMQ, MinIO, Mailpit, volumes e probes |
-| [k8s/services.yaml](k8s/services.yaml) | Os quatro microsserviços, com requests e limites |
+| [k8s/services.yaml](k8s/services.yaml) | Os quatro microsserviços e a interface, com requests e limites |
 | [k8s/autoscaling.yaml](k8s/autoscaling.yaml) | HPA do worker e da API, PodDisruptionBudgets |
 | [k8s/ingress.yaml](k8s/ingress.yaml) | Roteamento equivalente ao do Nginx |
+
+São **dois** Ingress em [k8s/ingress.yaml](k8s/ingress.yaml): `rewrite-target` vale para o
+objeto inteiro, e reaproveitar o das APIs reescreveria também as rotas da interface, que
+precisam chegar ao Nginx como estão para que o fallback do SPA devolva o `index.html`.
 
 O HPA do worker precisa do metrics-server no cluster. O sinal ideal seria a profundidade de
 `video-processing-queue`; enquanto o Prometheus Adapter não está instalado, a régua é CPU,
