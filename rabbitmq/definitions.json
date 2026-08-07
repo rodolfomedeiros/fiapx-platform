@@ -45,10 +45,20 @@
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
-      "arguments": {}
+      "arguments": {
+        "x-dead-letter-exchange": "video.events",
+        "x-dead-letter-routing-key": "video.status.dead"
+      }
     },
     {
       "name": "video-processing-dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "video-status-dlq",
       "vhost": "/",
       "durable": true,
       "auto_delete": false,
@@ -78,6 +88,14 @@
       "destination": "video-processing-dlq",
       "destination_type": "queue",
       "routing_key": "video.failed",
+      "arguments": {}
+    },
+    {
+      "source": "video.events",
+      "vhost": "/",
+      "destination": "video-status-dlq",
+      "destination_type": "queue",
+      "routing_key": "video.status.dead",
       "arguments": {}
     }
   ],

@@ -17,8 +17,20 @@ Após três falhas, o worker publica `video.failed`; o notification-service cons
 
 Exchange `video.events`, do tipo topic. `video-processing-queue` (chave `video.received`)
 tem dead lettering para `video.failed`, de modo que uma mensagem rejeitada chega sozinha à
-DLQ e vira e-mail. `video-status-queue` recebe `video.status.changed` e
-`video-processing-dlq` recebe `video.failed`.
+DLQ e vira e-mail. `video-status-queue` recebe `video.status.changed` e faz dead lettering
+para `video.status.dead`. `video-processing-dlq` recebe `video.failed` e `video-status-dlq`
+recebe `video.status.dead`.
+
+Nenhuma das duas filas de trabalho descarta mensagem: uma transição de status que não pôde
+ser gravada — o Postgres fora do ar, por exemplo — é retentada uma vez e, persistindo a
+falha, para em `video-status-dlq` em vez de sumir e deixar o vídeo travado no status
+anterior.
+
+O worker é idempotente por reentrega. Como o broker entrega ao menos uma vez, uma réplica
+derrubada antes do `ack` faz a mensagem voltar para a fila; antes de chamar o FFmpeg o
+worker consulta o bucket e, achando o ZIP daquele vídeo, apenas reanuncia o resultado. O
+total de quadros viaja como metadado do objeto, o que evita reabrir o arquivo só para
+contá-los.
 
 ## Observabilidade
 

@@ -227,6 +227,7 @@ checkout isolado do CI não teria como validar o contrato.
 | `video.received` | serviço de vídeos (upload) e worker (retentativa) | `video-processing-queue` |
 | `video.status.changed` | worker | `video-status-queue` |
 | `video.failed` | worker (tentativas esgotadas) e o dead letter | `video-processing-dlq` |
+| `video.status.dead` | o dead letter de `video-status-queue` | `video-status-dlq` |
 
 Campos obrigatórios: `event_id`, `event_type`, `occurred_at`, `video_id`, `user_id`,
 `attempt`. Os opcionais (`status`, `raw_file_path`, `zip_file_path`, `frame_count`,
@@ -235,13 +236,19 @@ como `string` e enviar `null` violaria o contrato.
 
 ## Topologia do broker
 
-`rabbitmq/definitions.json` declara o exchange `video.events`, as três filas, os bindings e
+`rabbitmq/definitions.json` declara o exchange `video.events`, as quatro filas, os bindings e
 o usuário. O `rabbitmq/rabbitmq.conf` é o que faz o broker realmente carregar esse arquivo
 (via `load_definitions`) e o que liga as métricas por fila.
 
 `video-processing-queue` é declarada com `x-dead-letter-exchange: video.events` e
 `x-dead-letter-routing-key: video.failed`: uma mensagem rejeitada sem reenfileiramento cai
 sozinha na DLQ e vira e-mail, sem que ninguém precise tratar o caso explicitamente.
+
+`video-status-queue` tem o mesmo mecanismo apontando para `video.status.dead`. As duas filas
+que carregam trabalho terminam em uma DLQ: nenhuma mensagem some porque o consumidor
+tropeçou. A diferença é o destino — `video-processing-dlq` é lida pelo notification-service e
+vira e-mail, enquanto `video-status-dlq` acumula falhas de persistência para inspeção e
+redrive, que são um problema operacional e não algo a reportar ao usuário.
 
 Os serviços declaram as mesmas filas com os mesmos argumentos ao conectar, para funcionarem
 também quando o arquivo de definições não estiver presente — divergir nos argumentos faria
