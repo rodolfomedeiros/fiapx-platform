@@ -24,14 +24,14 @@ services:
     healthcheck: { test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"], interval: 10s, timeout: 5s, retries: 12, start_period: 30s }
     networks: [fiapx]
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address :9001
     environment: { MINIO_ROOT_USER: fiapx, MINIO_ROOT_PASSWORD: fiapx-minio-password }
     ports: ["9000:9000", "9001:9001"]
     volumes: [minio-data:/data]
     networks: [fiapx]
   minio-init:
-    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on: [minio]
     entrypoint: ["/bin/sh", "-c", "until mc alias set local http://minio:9000 fiapx fiapx-minio-password; do sleep 1; done; mc mb --ignore-existing local/videos; mc anonymous set download local/videos"]
     networks: [fiapx]
